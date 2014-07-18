@@ -49,8 +49,8 @@
     if (mag0 > high_thr)                \
     {                                   \
         value = 2;                      \
-        int idx = atomic_inc(counter);  \
-        stack[idx] = (ushort2)(a, b);   \
+        int c = atomic_inc(counter);    \
+        stack[c] = (ushort2)(a, b);     \
     }                                   \
     else                                \
         value = 0;
@@ -77,14 +77,17 @@ __kernel void stage1_with_sobel(__global const uchar *src, int src_step, int src
                                 __global ushort2 *stack, __global int *counter, 
                                 int low_thr, int high_thr)
 {
-    int gidx = get_global_id(0);
-    int gidy = get_global_id(1);
+    int gidx_im = get_global_id(0);
+    int gidy_im = get_global_id(1);
+
+    int gidx = gidx_im - (get_group_id(0) * 2 - 1);
+    int gidy = gidy_im - (get_group_id(1) * 2 - 1);
 
     int lidx = get_local_id(0);
     int lidy = get_local_id(1);
 
 #define ptr(x, y) \
-    (src + mad24(src_step, clamp(gidy + y, 0, rows - 1), clamp(gidx + x, 0, cols - 1) * cn) + src_offset) 
+    (src + mad24(src_step, clamp(gidy + y, 0, rows - 1), mad24(clamp(gidx + x, 0, cols - 1) * cn, sizeof(TYPE), src_offset)))
     //// Sobel
     // 
 
@@ -96,7 +99,7 @@ __kernel void stage1_with_sobel(__global const uchar *src, int src_step, int src
                 + 2 * (loadpix(ptr(0, 1)) - loadpix(ptr(0, -1)))
                 + loadpix(ptr(1, 1)) - loadpix(ptr(1, -1));
 
-    __local int mag[16][16]; // PROBLEM with alignment (bank conflict) what to do?
+    __local int mag[18][18];
 
     //// Magnitude
     //
@@ -126,15 +129,22 @@ __kernel void stage1_with_sobel(__global const uchar *src, int src_step, int src
     x = dx.x;
     y = dy.x;
 #endif
-
+    
     barrier(CLK_LOCAL_MEM_FENCE);
 
     //// Threshold + Non maxima suppression
     //
 
-    lidy = clamp(lidy, 1, 14);
-    lidx = clamp(lidx, 1, 14);
+    int grp_idx = gidx_im / 18;
+    int grp_idy = gidy_im / 18;
+
+    gidx = clamp(gidx, grp_idx * 16, (grp_idx + 1) * 16 - 1); // Можно заменить на сдвиги
+    gidy = clamp(gidy, grp_idy * 16, (grp_idy + 1) * 16 - 1);
+
+    lidx = clamp(lidx, 1, 16);
+    lidy = clamp(lidy, 1, 16);
     int mag0 = mag[lidy][lidx];
+
     /*
         0 - might belong to an edge
         1 - pixel doesn't belong to an edge
@@ -164,6 +174,7 @@ __kernel void stage1_with_sobel(__global const uchar *src, int src_step, int src
                 canny_push(gidx, gidy)
         }
     }
+    
     storepix(value, map + mad24(gidy, map_step, mad24(gidx, sizeof(int), map_offset)));
 }
 
@@ -200,7 +211,7 @@ __kernel void stage1_without_sobel(__global const short *dxptr, int dx_step, int
     int lidx = get_local_id(0);
     int lidy = get_local_id(1);
 
-    __local int mag[16][16]; // DOUBTS
+    __local int mag[18][18];
 
     int dx_index = mad24(gidy, dx_step, mad24(gidx, sizeof(short) * cn, dx_offset));
     int dy_index = mad24(gidy, dy_step, mad24(gidx, sizeof(short) * cn, dy_offset));
@@ -229,8 +240,8 @@ __kernel void stage1_without_sobel(__global const short *dxptr, int dx_step, int
 
     barrier(CLK_LOCAL_MEM_FENCE);
 
-    lidy = clamp(lidy, 1, 14);
-    lidx = clamp(lidx, 1, 14);
+    lidy = clamp(lidy, 1, 16);
+    lidx = clamp(lidx, 1, 16);
     mag0 = mag[lidy][lidx];
     /*
         0 - might belong to an edge
@@ -261,6 +272,7 @@ __kernel void stage1_without_sobel(__global const short *dxptr, int dx_step, int
                 canny_push(gidx, gidy);
         }
     }
+
     storepix(value, map + mad24(gidy, map_step, mad24(gidx, sizeof(int), map_offset)));
 }
 
@@ -275,53 +287,42 @@ __kernel void stage1_without_sobel(__global const short *dxptr, int dx_step, int
 */
 #define loadpix(addr) *(__global int *)(addr)
 #define storepix(val, addr) *(__global int *)(addr) = (int)(val)
-#define QUEUE_SIZE 5000
+#define stack_size 256
 
 __constant short move_dir[2][8] = {
     { -1, -1, -1, 0, 0, 1, 1, 1 },
     { -1, 0, 1, -1, 1, -1, 0, 1 }
 };
 
-#define lookAround(posx, posy)                                                                  \
-        for (int i = 0; i < 8; ++i)                                                             \
-        {                                                                                       \
-            ushort x = clamp(posx + move_dir[0][i], 0, cols);                                   \
-            ushort y = clamp(posy + move_dir[1][i], 0, rows);                                   \
-            __global uchar *addr = map + mad24(y, map_step, mad24(x, sizeof(int), map_offset)); \
-            int type = loadpix(addr);                                                           \
-            if (!type && start_idx != end_idx)                                                  \
-            {                                                                                   \
-                idx = atomic_inc(&end_idx);                                                     \
-                queue[idx % QUEUE_SIZE] = (ushort2)(x, y);                                      \
-                storepix(2, addr);                                                              \
-            }                                                                                   \
-        }                                                                           
-
-
 __kernel void stage2_hysteresis(__global uchar *map, int map_step, int map_offset, int rows, int cols,
-                                __global const ushort2 *common_stack, int stack_size)
+                                __global const ushort2 *common_stack)
 {
-    __local ushort2 queue[QUEUE_SIZE];
-    __local int start_idx, end_idx;
-    start_idx = 0;
-    end_idx = 1;
-    barrier(CLK_LOCAL_MEM_FENCE);
+    ushort2 stack[stack_size];
+    uchar counter = 0;
 
     int gid = get_global_id(0);
+    stack[0] = common_stack[gid];
+    counter++;
 
-    int idx = min(gid, stack_size - 1); // DOUBTS about min
-    ushort2 pos = common_stack[idx];
-#pragma unroll
-    lookAround(pos.x, pos.y);
-    barrier(CLK_LOCAL_MEM_FENCE);
-
-    /*while ((end_idx - start_idx + QUEUE_SIZE) % QUEUE_SIZE != 1)
+    while (counter)
     {
-        idx = atomic_inc(&start_idx);
-        pos = queue[(idx + 1) % QUEUE_SIZE];
-#pragma unroll
-        lookAround(pos.x, pos.y);
-    }*/
+        ushort2 pos = stack[counter - 1];
+        #pragma unroll
+        for (int i = 0; i < 8; i++)
+        {
+            ushort posx = clamp(pos.x + move_dir[0][i], 0, cols - 1);
+            ushort posy = clamp(pos.y + move_dir[1][i], 0, rows - 1);
+            __global int *addr = map + mad24(posy, map_step, mad24(posx, sizeof(int), map_offset));
+            int type = loadpix(addr);
+            if (!type)
+            {
+                stack[counter] = (ushort2)(posx, posy);
+                counter++;
+                storepix(2, addr);
+            }
+        }
+        counter--;
+    }
 }
 
 #elif defined GET_EDGES
@@ -337,7 +338,7 @@ __kernel void getEdges(__global const uchar *mapptr, int map_step, int map_offse
     int y = get_global_id(1);
     
     int map_index = mad24(map_step, y, mad24(x, sizeof(int), map_offset));
-    int dst_index = mad24(dst_step, y, x + dst_offset);
+    int dst_index = mad24(dst_step, y, x) + dst_offset;
 
     __global const int * map = (__global const int *)(mapptr + map_index);
 

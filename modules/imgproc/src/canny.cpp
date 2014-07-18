@@ -139,7 +139,7 @@ static bool ocl_Canny(InputArray _src, OutputArray _dst, float low_thresh, float
                         ocl::KernelArg::PtrReadWrite(counter),
                         low, high);
 
-        size_t globalsize[2] = { size.width, size.height }, localsize[2] = { 16, 16 };
+        size_t globalsize[2] = { size.width + 2, size.height + 2 }, localsize[2] = { 18, 18 };
         if (!with_sobel.run(2, globalsize, localsize, false))
             return false;
     }
@@ -165,7 +165,7 @@ static bool ocl_Canny(InputArray _src, OutputArray _dst, float low_thresh, float
                            ocl::KernelArg::PtrWriteOnly(stack),
                            ocl::KernelArg::PtrReadWrite(counter), low, high);
 
-        size_t globalsize[2] = { size.width, size.height }, localsize[2] = { 16, 16 };
+        size_t globalsize[2] = { size.width + 2, size.height + 2 }, localsize[2] = { 18, 18 };
         if (!without_sobel.run(2, globalsize, localsize, false))
             return false;
     }
@@ -184,8 +184,7 @@ static bool ocl_Canny(InputArray _src, OutputArray _dst, float low_thresh, float
     Mat count = counter.getMat(ACCESS_READ); // How to do it without getMat() (Line below)
 
     edgesHysteresis.args(ocl::KernelArg::ReadWrite(map), 
-                         ocl::KernelArg::PtrReadOnly(stack),
-                         count.at<int>(0, 0)); // this line
+                         ocl::KernelArg::PtrReadOnly(stack));
 
 
     size_t gsize = count.at<int>(0, 0), lsize = 64;
@@ -447,7 +446,7 @@ __ocv_canny_push:
         if (!m[mapstep])    CANNY_PUSH(m + mapstep);
         if (!m[mapstep+1])  CANNY_PUSH(m + mapstep + 1);
     }
-
+    
     // the final pass, form the final image
     const uchar* pmap = map + mapstep + 1;
     uchar* pdst = dst.ptr();
