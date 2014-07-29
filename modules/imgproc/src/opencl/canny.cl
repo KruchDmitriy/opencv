@@ -45,6 +45,8 @@
 
 #define CANNY_SHIFT 15
 #define TG22        (int)(0.4142135623730950488016887242097f * (1 << CANNY_SHIFT) + 0.5f)
+
+// it can be written more easier
 #define canny_push(a, b)                \
     if (mag0 > high_thr)                \
     {                                   \
@@ -58,9 +60,9 @@
 #ifdef WITH_SOBEL
 
 #if cn == 1
-#define loadpix(addr) *(__global TYPE *)(addr)
+#define loadpix(addr) convert_intN(*(__global const TYPE *)(addr))
 #else
-#define loadpix(addr) convert_intN(vload3(0, (__global TYPE *)(addr)))
+#define loadpix(addr) convert_intN(vload3(0, (__global const TYPE *)(addr)))
 #endif
 #define storepix(value, addr) *(__global int *)(addr) = (int)(value)
 
@@ -80,8 +82,8 @@ __kernel void stage1_with_sobel(__global const uchar *src, int src_step, int src
     int gidx_im = get_global_id(0);
     int gidy_im = get_global_id(1);
 
-    int gidx = gidx_im - (get_group_id(0) * 2 - 1);
-    int gidy = gidy_im - (get_group_id(1) * 2 - 1);
+    int gidx = gidx_im - (get_group_id(0) * 2 + 1);
+    int gidy = gidy_im - (get_group_id(1) * 2 + 1);
 
     int lidx = get_local_id(0);
     int lidy = get_local_id(1);
@@ -108,7 +110,7 @@ __kernel void stage1_with_sobel(__global const uchar *src, int src_step, int src
 #ifdef L2_GRAD
     intN magN = dx * dx + dy * dy;
 #else
-    intN magN = dx + dy;
+    intN magN = convert_intN(abs(dx) + abs(dy));
 #endif
 #if cn == 1
     mag[lidy][lidx] = magN;
@@ -135,22 +137,27 @@ __kernel void stage1_with_sobel(__global const uchar *src, int src_step, int src
     //// Threshold + Non maxima suppression
     //
 
-    int grp_idx = gidx_im / 18;
+    /*int grp_idx = gidx_im / 18;
     int grp_idy = gidy_im / 18;
 
-    gidx = clamp(gidx, grp_idx * 16, (grp_idx + 1) * 16 - 1); // Можно заменить на сдвиги
+    gidx = clamp(gidx, grp_idx * 16, (grp_idx + 1) * 16 - 1); // apply shifts
     gidy = clamp(gidy, grp_idy * 16, (grp_idy + 1) * 16 - 1);
 
     lidx = clamp(lidx, 1, 16);
-    lidy = clamp(lidy, 1, 16);
-    int mag0 = mag[lidy][lidx];
+    lidy = clamp(lidy, 1, 16);*/
+
+    int mag0;
+    if (lidx > 0 && lidx < 17 && lidy > 0 && lidy < 17)
+        mag0 = mag[lidy][lidx];
+    else
+        return;
 
     /*
         0 - might belong to an edge
         1 - pixel doesn't belong to an edge
         2 - belong to an edge
     */
-    uchar value = 1;
+    int value = 1;
     if (mag0 > low_thr)
     {
         int tg22x = x * TG22;
@@ -160,18 +167,24 @@ __kernel void stage1_with_sobel(__global const uchar *src, int src_step, int src
         if (y < tg22x)
         {
             if (mag0 > mag[lidy][lidx - 1] && mag0 > mag[lidy][lidx + 1])
+            {
                 canny_push(gidx, gidy)
+            }
         }
         else if (y < tg67x)
         {
             int delta = ((x ^ y) < 0) ? -1 : 1;
             if (mag0 > mag[lidy + delta][lidx - 1] && mag0 > mag[lidy - delta][lidx + 1])
+            {
                 canny_push(gidx, gidy)
+            }
         }
         else
         {
             if (mag0 > mag[lidy - 1][lidx] && mag0 > mag[lidy + 1][lidx])
+            {
                 canny_push(gidx, gidy)
+            }
         }
     }
     
