@@ -98,7 +98,7 @@ static bool ocl_Canny(InputArray _src, OutputArray _dst, float low_thresh, float
                       int aperture_size, bool L2gradient, int cn, const Size & size)
 {
     UMat dx(size, CV_16SC(cn)), dy(size, CV_16SC(cn));
-    UMat map(size, CV_32SC1), stack(1, size.area(), CV_16UC2);
+    UMat map(size, CV_32S), stack(1, size.area(), CV_16UC2);
     UMat counter(1, 1, CV_32S, Scalar::all(0));
 
     if (L2gradient)
@@ -139,8 +139,8 @@ static bool ocl_Canny(InputArray _src, OutputArray _dst, float low_thresh, float
                         ocl::KernelArg::PtrReadWrite(counter),
                         low, high);
 
-        size_t globalsize[2] = { size.width / 16 * 18 + (size.width % 16 + 2) * (size.width % 16 != 0), 
-                                size.height / 16 * 18 + (size.height % 16 + 2) * (size.height % 16 != 0) },
+        size_t globalsize[2] = { size.width / 16 * 18 + (size.width % 16 + 2) * (int)(size.width % 16 != 0), 
+                                size.height / 16 * 18 + (size.height % 16 + 2) * (int)(size.height % 16 != 0) },
                 localsize[2] = { 18, 18 };
         if (!with_sobel.run(2, globalsize, localsize, false))
             return false;
@@ -167,7 +167,9 @@ static bool ocl_Canny(InputArray _src, OutputArray _dst, float low_thresh, float
                            ocl::KernelArg::PtrWriteOnly(stack),
                            ocl::KernelArg::PtrReadWrite(counter), low, high);
 
-        size_t globalsize[2] = { size.width + 2, size.height + 2 }, localsize[2] = { 18, 18 };
+        size_t globalsize[2] = { size.width / 16 * 18 + (size.width % 16 + 2) * (int)(size.width % 16 != 0), 
+                                size.height / 16 * 18 + (size.height % 16 + 2) * (int)(size.height % 16 != 0) },
+                localsize[2] = { 18, 18 };
         if (!without_sobel.run(2, globalsize, localsize, false))
             return false;
     }
@@ -175,24 +177,23 @@ static bool ocl_Canny(InputArray _src, OutputArray _dst, float low_thresh, float
     /*
         stage2:
             hysteresis (add weak edges if they are connected with strong edges)
+    */
 
-    
+
     ocl::Kernel edgesHysteresis("stage2_hysteresis", ocl::imgproc::canny_oclsrc,
                                            "-D STAGE2");
     if (edgesHysteresis.empty())
         return false;
 
-    Mat count = counter.getMat(ACCESS_READ); // How to do it without getMat() (Line below)
-
     edgesHysteresis.args(ocl::KernelArg::ReadWrite(map), 
                          ocl::KernelArg::PtrReadOnly(stack));
 
-
+    Mat count = counter.getMat(ACCESS_READ);
     size_t gsize = count.at<int>(0, 0), lsize = 64;
 
     if (!edgesHysteresis.run(1, &gsize, &lsize, false))
         return false;
-    */
+
     // get edges
     ocl::Kernel getEdgesKernel("getEdges", ocl::imgproc::canny_oclsrc, "-D GET_EDGES");
     if (getEdgesKernel.empty())
@@ -422,7 +423,7 @@ __ocv_canny_push:
         mag_buf[1] = mag_buf[2];
         mag_buf[2] = _mag;
     }
-    /*
+    
     // now track the edges (hysteresis thresholding)
     while (stack_top > stack_bottom)
     {
@@ -447,7 +448,7 @@ __ocv_canny_push:
         if (!m[mapstep])    CANNY_PUSH(m + mapstep);
         if (!m[mapstep+1])  CANNY_PUSH(m + mapstep + 1);
     }
-    */
+    
     // the final pass, form the final image
     const uchar* pmap = map + mapstep + 1;
     uchar* pdst = dst.ptr();

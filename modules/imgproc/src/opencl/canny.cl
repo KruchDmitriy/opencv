@@ -108,7 +108,7 @@ __kernel void stage1_with_sobel(__global const uchar *src, int src_step, int src
 
     int x, y;
 #ifdef L2_GRAD
-    intN magN = dx * dx + dy * dy;
+    intN magN = convert_intN(dx * dx + dy * dy);
 #else
     intN magN = convert_intN(abs(dx) + abs(dy));
 #endif
@@ -147,7 +147,7 @@ __kernel void stage1_with_sobel(__global const uchar *src, int src_step, int src
     lidy = clamp(lidy, 1, 16);*/
 
     int mag0;
-    if (lidx > 0 && lidx < 17 && lidy > 0 && lidy < 17)
+    if (lidx > 0 && lidx < 17 && lidy > 0 && lidy < 17 && gidx < cols && gidy < rows)
         mag0 = mag[lidy][lidx];
     else
         return;
@@ -160,30 +160,33 @@ __kernel void stage1_with_sobel(__global const uchar *src, int src_step, int src
     int value = 1;
     if (mag0 > low_thr)
     {
-        int tg22x = x * TG22;
-        y <<= CANNY_SHIFT;
-        int tg67x = tg22x + (x << (1 + CANNY_SHIFT));
+        int tg22x = abs(x) * TG22;
+        y <<= CANNY_SHIFT;       
 
-        if (y < tg22x)
+        if (abs(y) < tg22x)
         {
-            if (mag0 > mag[lidy][lidx - 1] && mag0 > mag[lidy][lidx + 1])
+            if (mag0 > mag[lidy][lidx - 1] && mag0 >= mag[lidy][lidx + 1])
             {
                 canny_push(gidx, gidy)
             }
         }
-        else if (y < tg67x)
+        else 
         {
-            int delta = ((x ^ y) < 0) ? -1 : 1;
-            if (mag0 > mag[lidy + delta][lidx - 1] && mag0 > mag[lidy - delta][lidx + 1])
+            int tg67x = tg22x + (abs(x) << (1 + CANNY_SHIFT));
+            if (abs(y) > tg67x)
             {
-                canny_push(gidx, gidy)
+                if (mag0 > mag[lidy - 1][lidx] && mag0 >= mag[lidy + 1][lidx])
+                {
+                    canny_push(gidx, gidy)
+                }
             }
-        }
-        else
-        {
-            if (mag0 > mag[lidy - 1][lidx] && mag0 > mag[lidy + 1][lidx])
+            else
             {
-                canny_push(gidx, gidy)
+                int delta = ((x ^ y) < 0) ? 1 : -1;
+                if (mag0 > mag[lidy + delta][lidx - 1] && mag0 > mag[lidy - delta][lidx + 1])
+                {
+                    canny_push(gidx, gidy)
+                }
             }
         }
     }
@@ -264,25 +267,31 @@ __kernel void stage1_without_sobel(__global const short *dxptr, int dx_step, int
     uchar value = 1;
     if (mag0 > low_thr)
     {
-        int tg22x = dx[0] * TG22;
-        int y = dy[0] << CANNY_SHIFT;
-        int tg67x = tg22x + (dx[0] << (1 + CANNY_SHIFT));
+        int tg22x = abs(dx[0]) * TG22;
+        int y = abs(dy[0]) << CANNY_SHIFT;
+        int tg67x = tg22x + (abs(dx[0]) << (1 + CANNY_SHIFT));
         
         if (y < tg22x)
         {
-            if (mag0 > mag[lidy][lidx - 1] && mag0 > mag[lidy][lidx + 1])
-                canny_push(gidx, gidy);
+            if (mag0 > mag[lidy][lidx - 1] && mag0 >= mag[lidy][lidx + 1])
+            {
+                canny_push(gidx, gidy)
+            }
         }
-        else if(y < tg67x)
+        else if(y > tg67x)
         {
-            int delta = ((dx[0] ^ dy[0]) < 0) ? -1 : 1;
-            if (mag0 > mag[lidy + delta][lidx - 1] && mag0 > mag[lidy - delta][lidx + 1])
-                canny_push(gidx, gidy);
+            if (mag0 > mag[lidy - 1][lidx] && mag0 >= mag[lidy + 1][lidx])
+            {
+                canny_push(gidx, gidy)
+            }    
         }
         else
         {
-            if (mag0 > mag[lidy - 1][lidx] && mag0 > mag[lidy + 1][lidx])
-                canny_push(gidx, gidy);
+            int delta = ((dx[0] ^ dy[0]) < 0) ? -1 : 1;
+            if (mag0 > mag[lidy + delta][lidx - 1] && mag0 > mag[lidy - delta][lidx + 1])
+            {
+                canny_push(gidx, gidy)
+            }             
         }
     }
 
@@ -296,11 +305,11 @@ __kernel void stage1_without_sobel(__global const short *dxptr, int dx_step, int
 #elif defined STAGE2
 /*
     stage2:
-        hysteresis (add edges labeled 1 if they are connected with an edge labeled 2)
+        hysteresis (add edges labeled 0 if they are connected with an edge labeled 2)
 */
 #define loadpix(addr) *(__global int *)(addr)
 #define storepix(val, addr) *(__global int *)(addr) = (int)(val)
-#define stack_size 256
+#define stack_size 1024
 
 __constant short move_dir[2][8] = {
     { -1, -1, -1, 0, 0, 1, 1, 1 },
@@ -311,23 +320,23 @@ __kernel void stage2_hysteresis(__global uchar *map, int map_step, int map_offse
                                 __global const ushort2 *common_stack)
 {
     ushort2 stack[stack_size];
-    uchar counter = 0;
+    int counter = 0;
 
     int gid = get_global_id(0);
     stack[0] = common_stack[gid];
     counter++;
 
-    while (counter)
+    while (counter != 0)
     {
         ushort2 pos = stack[counter - 1];
         #pragma unroll
-        for (int i = 0; i < 8; i++)
+        for (int i = 0; i < 8; ++i)
         {
             ushort posx = clamp(pos.x + move_dir[0][i], 0, cols - 1);
             ushort posy = clamp(pos.y + move_dir[1][i], 0, rows - 1);
-            __global int *addr = map + mad24(posy, map_step, mad24(posx, sizeof(int), map_offset));
+            __global int *addr = (__global int *)(map + mad24(posy, map_step, mad24(posx, sizeof(int), map_offset)));
             int type = loadpix(addr);
-            if (!type)
+            if (type == 0)
             {
                 stack[counter] = (ushort2)(posx, posy);
                 counter++;
