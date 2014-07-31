@@ -46,7 +46,7 @@
 #define CANNY_SHIFT 15
 #define TG22        (int)(0.4142135623730950488016887242097f * (1 << CANNY_SHIFT) + 0.5f)
 
-// it can be written more easier
+// how to write it more easier
 #define canny_push(a, b)                \
     if (mag0 > high_thr)                \
     {                                   \
@@ -107,8 +107,8 @@ __kernel void stage1_with_sobel(__global const uchar *src, int src_step, int src
     //
 
     int x, y;
-#ifdef L2_GRAD
-    intN magN = convert_intN(dx * dx + dy * dy);
+#ifdef L2GRAD
+    intN magN = dx * dx + dy * dy;
 #else
     intN magN = convert_intN(abs(dx) + abs(dy));
 #endif
@@ -146,11 +146,9 @@ __kernel void stage1_with_sobel(__global const uchar *src, int src_step, int src
     lidx = clamp(lidx, 1, 16);
     lidy = clamp(lidy, 1, 16);*/
 
-    int mag0;
-    if (lidx > 0 && lidx < 17 && lidy > 0 && lidy < 17 && gidx < cols && gidy < rows)
-        mag0 = mag[lidy][lidx];
-    else
+    if (!(lidx > 0 && lidx < 17 && lidy > 0 && lidy < 17 && gidx < cols && gidy < rows))
         return;
+    int mag0 = mag[lidy][lidx];
 
     /*
         0 - might belong to an edge
@@ -182,8 +180,8 @@ __kernel void stage1_with_sobel(__global const uchar *src, int src_step, int src
             }
             else
             {
-                int delta = ((x ^ y) < 0) ? 1 : -1;
-                if (mag0 > mag[lidy + delta][lidx - 1] && mag0 > mag[lidy - delta][lidx + 1])
+                int delta = ((x ^ y) < 0) ? -1 : 1;
+                if (mag0 > mag[lidy - delta][lidx - 1] && mag0 > mag[lidy + delta][lidx + 1])
                 {
                     canny_push(gidx, gidy)
                 }
@@ -206,39 +204,40 @@ __kernel void stage1_with_sobel(__global const uchar *src, int src_step, int src
 #define loadpix(addr) (__global short *)(addr)
 #define storepix(val, addr) *(__global int *)(addr) = (int)(val)
 
-inline int dist(short x, short y)
-{
-#ifdef L2_GRAD
-    return x * x + y * y;
+#ifdef L2GRAD
+#define dist(x, y) ((int)(x) * (x) + (int)(y) * (y))
 #else
-    return abs(x) + abs(y);
+#define dist(x, y) (abs(x) + abs(y))             
 #endif
-}
 
-__kernel void stage1_without_sobel(__global const short *dxptr, int dx_step, int dx_offset,
-                                   __global const short *dyptr, int dy_step, int dy_offset,
-                                   __global uchar *map, int map_step, int map_offset,
+
+__kernel void stage1_without_sobel(__global const uchar *dxptr, int dx_step, int dx_offset, 
+                                   __global const uchar *dyptr, int dy_step, int dy_offset,
+                                   __global uchar *map, int map_step, int map_offset, int rows, int cols,
                                    __global ushort2 *stack, __global int *counter,
                                    int low_thr, int high_thr)
 {
-    int gidx = get_global_id(0);
-    int gidy = get_global_id(1);
+    int gidx_im = get_global_id(0);
+    int gidy_im = get_global_id(1);
+
+    int gidx = clamp((int)(gidx_im - (get_group_id(0) * 2 + 1)), 0, cols - 1);
+    int gidy = clamp((int)(gidy_im - (get_group_id(1) * 2 + 1)), 0, rows - 1);
 
     int lidx = get_local_id(0);
     int lidy = get_local_id(1);
 
     __local int mag[18][18];
 
-    int dx_index = mad24(gidy, dx_step, mad24(gidx, sizeof(short) * cn, dx_offset));
-    int dy_index = mad24(gidy, dy_step, mad24(gidx, sizeof(short) * cn, dy_offset));
+    int dx_index = mad24(gidy, dx_step, mad24(gidx, cn * sizeof(short), dx_offset));
+    int dy_index = mad24(gidy, dy_step, mad24(gidx, cn * sizeof(short), dy_offset));
 
     __global short *dx = loadpix(dxptr + dx_index);
     __global short *dy = loadpix(dyptr + dy_index);
 
     int mag0 = dist(dx[0], dy[0]);
 #if cn > 1
-    #pragma unroll
     short cdx = dx[0], cdy = dy[0];
+    #pragma unroll
     for (int i = 1; i < cn; ++i)
     {
         int mag1 = dist(dx[i], dy[i]); 
@@ -256,20 +255,20 @@ __kernel void stage1_without_sobel(__global const short *dxptr, int dx_step, int
 
     barrier(CLK_LOCAL_MEM_FENCE);
 
-    lidy = clamp(lidy, 1, 16);
-    lidx = clamp(lidx, 1, 16);
-    mag0 = mag[lidy][lidx];
+    if (!(lidx > 0 && lidx < 17 && lidy > 0 && lidy < 17))
+        return;
+
     /*
         0 - might belong to an edge
         1 - pixel doesn't belong to an edge
         2 - belong to an edge
     */
-    uchar value = 1;
+    int value = 1;
     if (mag0 > low_thr)
     {
-        int tg22x = abs(dx[0]) * TG22;
-        int y = abs(dy[0]) << CANNY_SHIFT;
-        int tg67x = tg22x + (abs(dx[0]) << (1 + CANNY_SHIFT));
+        int tg22x = ((int)abs(dx[0])) * TG22;
+        int y = ((int)abs(dy[0])) << CANNY_SHIFT;
+        int tg67x = tg22x + ((abs((int)dx[0])) << (1 + CANNY_SHIFT));
         
         if (y < tg22x)
         {
@@ -288,7 +287,7 @@ __kernel void stage1_without_sobel(__global const short *dxptr, int dx_step, int
         else
         {
             int delta = ((dx[0] ^ dy[0]) < 0) ? -1 : 1;
-            if (mag0 > mag[lidy + delta][lidx - 1] && mag0 > mag[lidy - delta][lidx + 1])
+            if (mag0 > mag[lidy - delta][lidx - 1] && mag0 > mag[lidy + delta][lidx + 1])
             {
                 canny_push(gidx, gidy)
             }             
@@ -309,7 +308,7 @@ __kernel void stage1_without_sobel(__global const short *dxptr, int dx_step, int
 */
 #define loadpix(addr) *(__global int *)(addr)
 #define storepix(val, addr) *(__global int *)(addr) = (int)(val)
-#define stack_size 1024
+#define stack_size 256
 
 __constant short move_dir[2][8] = {
     { -1, -1, -1, 0, 0, 1, 1, 1 },
@@ -319,8 +318,8 @@ __constant short move_dir[2][8] = {
 __kernel void stage2_hysteresis(__global uchar *map, int map_step, int map_offset, int rows, int cols,
                                 __global const ushort2 *common_stack)
 {
-    ushort2 stack[stack_size];
-    int counter = 0;
+    __private ushort2 stack[stack_size];
+    uchar counter = 0;
 
     int gid = get_global_id(0);
     stack[0] = common_stack[gid];
@@ -328,7 +327,7 @@ __kernel void stage2_hysteresis(__global uchar *map, int map_step, int map_offse
 
     while (counter != 0)
     {
-        ushort2 pos = stack[counter - 1];
+        ushort2 pos = stack[--counter];
         #pragma unroll
         for (int i = 0; i < 8; ++i)
         {
@@ -343,7 +342,6 @@ __kernel void stage2_hysteresis(__global uchar *map, int map_step, int map_offse
                 storepix(2, addr);
             }
         }
-        counter--;
     }
 }
 
