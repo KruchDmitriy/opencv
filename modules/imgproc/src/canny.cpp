@@ -179,7 +179,7 @@ static bool ocl_Canny(InputArray _src, OutputArray _dst, float low_thresh, float
             hysteresis (add weak edges if they are connected with strong edges)
     */
 
-
+    
     ocl::Kernel edgesHysteresis("stage2_hysteresis", ocl::imgproc::canny_oclsrc,
                                            "-D STAGE2");
     if (edgesHysteresis.empty())

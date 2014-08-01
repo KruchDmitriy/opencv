@@ -46,7 +46,7 @@
 #define CANNY_SHIFT 15
 #define TG22        (int)(0.4142135623730950488016887242097f * (1 << CANNY_SHIFT) + 0.5f)
 
-// how to write it more easier
+// how to write it more easier?
 #define canny_push(a, b)                \
     if (mag0 > high_thr)                \
     {                                   \
@@ -82,8 +82,11 @@ __kernel void stage1_with_sobel(__global const uchar *src, int src_step, int src
     int gidx_im = get_global_id(0);
     int gidy_im = get_global_id(1);
 
-    int gidx = gidx_im - (get_group_id(0) * 2 + 1);
-    int gidy = gidy_im - (get_group_id(1) * 2 + 1);
+    int grp_idx = get_group_id(0);
+    int grp_idy = get_group_id(1);
+
+    int gidx = gidx_im - (grp_idx * 2 + 1);
+    int gidy = gidy_im - (grp_idy * 2 + 1);
 
     int lidx = get_local_id(0);
     int lidy = get_local_id(1);
@@ -137,11 +140,11 @@ __kernel void stage1_with_sobel(__global const uchar *src, int src_step, int src
     //// Threshold + Non maxima suppression
     //
 
-    /*int grp_idx = gidx_im / 18;
-    int grp_idy = gidy_im / 18;
+    /*gidx = clamp(gidx, grp_idx << 4, ((grp_idx + 1) << 4) - 1);
+    gidy = clamp(gidy, grp_idy << 4, ((grp_idy + 1) << 4) - 1);
 
-    gidx = clamp(gidx, grp_idx * 16, (grp_idx + 1) * 16 - 1); // apply shifts
-    gidy = clamp(gidy, grp_idy * 16, (grp_idy + 1) * 16 - 1);
+    gidx = min(gidx, cols - 1);
+    gidy = min(gidy, rows - 1);
 
     lidx = clamp(lidx, 1, 16);
     lidy = clamp(lidy, 1, 16);*/
