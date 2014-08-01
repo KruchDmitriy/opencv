@@ -101,6 +101,11 @@ static bool ocl_Canny(InputArray _src, OutputArray _dst, float low_thresh, float
     UMat map(size, CV_32S), stack(1, size.area(), CV_16UC2);
     UMat counter(1, 1, CV_32S, Scalar::all(0));
     
+    int sizeX_im = 28,
+        sizeY_im = 18,
+        sizeX_re = sizeX_im - 2,
+        sizeY_re = sizeY_im - 2;
+
     if (L2gradient)
     {
         low_thresh = std::min(32767.0f, low_thresh);
@@ -124,10 +129,11 @@ static bool ocl_Canny(InputArray _src, OutputArray _dst, float low_thresh, float
         */
         char cvt[40];
         ocl::Kernel with_sobel("stage1_with_sobel", ocl::imgproc::canny_oclsrc,
-                               format("-D WITH_SOBEL -D cn=%d -D TYPE=%s -D convert_intN=%s -D intN=%s%s", 
+                               format("-D WITH_SOBEL -D cn=%d -D TYPE=%s -D convert_intN=%s -D intN=%s -D GRP_SIZEX=%d -D GRP_SIZEY=%d%s", 
                                       cn, ocl::memopTypeToStr(_src.depth()),
                                       ocl::convertTypeStr(_src.type(), CV_32SC(cn), cn, cvt),
                                       ocl::memopTypeToStr(CV_32SC(cn)),
+                                      sizeX_im, sizeY_im,
                                       L2gradient ? " -D L2GRAD" : ""));
         if (with_sobel.empty())
             return false;
@@ -139,9 +145,10 @@ static bool ocl_Canny(InputArray _src, OutputArray _dst, float low_thresh, float
                         ocl::KernelArg::PtrReadWrite(counter),
                         low, high);
 
-        size_t globalsize[2] = { size.width / 16 * 18 + (size.width % 16 + 2), 
-                                size.height / 16 * 18 + (size.height % 16 + 2) },
-                localsize[2] = { 18, 18 };
+        size_t globalsize[2] = { (size.width + sizeX_re - 1) / sizeX_re * sizeX_im  , 
+                                (size.height + sizeY_re - 1) / sizeY_re * sizeY_im },
+                localsize[2] = { sizeX_im, sizeY_im };
+
         if (!with_sobel.run(2, globalsize, localsize, false))
             return false;
     }
@@ -157,8 +164,8 @@ static bool ocl_Canny(InputArray _src, OutputArray _dst, float low_thresh, float
         Sobel(_src, dy, CV_16S, 0, 1, aperture_size, 1, 0, BORDER_REPLICATE);
 
         ocl::Kernel without_sobel("stage1_without_sobel", ocl::imgproc::canny_oclsrc,
-                                    format("-D WITHOUT_SOBEL -D cn=%d%s",
-                                           cn, L2gradient ? " -D L2GRAD" : ""));
+                                    format("-D WITHOUT_SOBEL -D cn=%d -D GRP_SIZEX=%d -D GRP_SIZEY=%d%s",
+                                           cn, sizeX_im, sizeY_im, L2gradient ? " -D L2GRAD" : ""));
         if (without_sobel.empty())
             return false;
 
@@ -167,9 +174,10 @@ static bool ocl_Canny(InputArray _src, OutputArray _dst, float low_thresh, float
                            ocl::KernelArg::PtrWriteOnly(stack),
                            ocl::KernelArg::PtrReadWrite(counter), low, high);
 
-        size_t globalsize[2] = { size.width / 16 * 18 + (size.width % 16 + 2), 
-                                size.height / 16 * 18 + (size.height % 16 + 2) },
-                localsize[2] = { 18, 18 };
+        size_t globalsize[2] = { (size.width + sizeX_re - 1) / sizeX_re * sizeX_im + 2 , 
+                                (size.height + sizeY_re - 1) / sizeY_re * sizeY_im + 2},
+                localsize[2] = { sizeX_im, sizeY_im };
+
         if (!without_sobel.run(2, globalsize, localsize, false))
             return false;
     }

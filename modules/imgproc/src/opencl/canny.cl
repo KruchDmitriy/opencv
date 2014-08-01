@@ -82,11 +82,8 @@ __kernel void stage1_with_sobel(__global const uchar *src, int src_step, int src
     int gidx_im = get_global_id(0);
     int gidy_im = get_global_id(1);
 
-    int grp_idx = get_group_id(0);
-    int grp_idy = get_group_id(1);
-
-    int gidx = gidx_im - (grp_idx * 2 + 1);
-    int gidy = gidy_im - (grp_idy * 2 + 1);
+    int gidx = gidx_im - (get_group_id(0) * 2 + 1);
+    int gidy = gidy_im - (get_group_id(1) * 2 + 1);
 
     int lidx = get_local_id(0);
     int lidy = get_local_id(1);
@@ -104,7 +101,7 @@ __kernel void stage1_with_sobel(__global const uchar *src, int src_step, int src
                 + 2 * (loadpix(ptr(0, 1)) - loadpix(ptr(0, -1)))
                 + loadpix(ptr(1, 1)) - loadpix(ptr(1, -1));
 
-    __local int mag[18][18];
+    __local int mag[GRP_SIZEY][GRP_SIZEX];
 
     //// Magnitude
     //
@@ -140,16 +137,7 @@ __kernel void stage1_with_sobel(__global const uchar *src, int src_step, int src
     //// Threshold + Non maxima suppression
     //
 
-    /*gidx = clamp(gidx, grp_idx << 4, ((grp_idx + 1) << 4) - 1);
-    gidy = clamp(gidy, grp_idy << 4, ((grp_idy + 1) << 4) - 1);
-
-    gidx = min(gidx, cols - 1);
-    gidy = min(gidy, rows - 1);
-
-    lidx = clamp(lidx, 1, 16);
-    lidy = clamp(lidy, 1, 16);*/
-
-    if (!(lidx > 0 && lidx < 17 && lidy > 0 && lidy < 17 && gidx < cols && gidy < rows))
+    if (!(lidx > 0 && lidx < (GRP_SIZEX - 1) && lidy > 0 && lidy < (GRP_SIZEY - 1) && gidx < (cols - 1) && gidy < (rows - 1)))
         return;
     int mag0 = mag[lidy][lidx];
 
@@ -229,7 +217,7 @@ __kernel void stage1_without_sobel(__global const uchar *dxptr, int dx_step, int
     int lidx = get_local_id(0);
     int lidy = get_local_id(1);
 
-    __local int mag[18][18];
+    __local int mag[GRP_SIZEY][GRP_SIZEX];
 
     int dx_index = mad24(gidy, dx_step, mad24(gidx, cn * sizeof(short), dx_offset));
     int dy_index = mad24(gidy, dy_step, mad24(gidx, cn * sizeof(short), dy_offset));
@@ -258,7 +246,7 @@ __kernel void stage1_without_sobel(__global const uchar *dxptr, int dx_step, int
 
     barrier(CLK_LOCAL_MEM_FENCE);
 
-    if (!(lidx > 0 && lidx < 17 && lidy > 0 && lidy < 17))
+    if (!(lidx > 0 && lidx < (GRP_SIZEX - 1) && lidy > 0 && lidy < (GRP_SIZEY - 1)))
         return;
 
     /*
