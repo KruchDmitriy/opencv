@@ -45,6 +45,9 @@
 
 #define CANNY_SHIFT 15
 #define TG22        (int)(0.4142135623730950488016887242097f * (1 << CANNY_SHIFT) + 0.5f)
+#define NEW_TG22 0.4142135623730950488016887242097f
+#define NEW_TG67 2.4142135623730950488016887242097f
+
 
 // how to write it more easier?
 #define canny_push(a, b)                \
@@ -88,23 +91,21 @@ __kernel void stage1_with_sobel(__global const uchar *src, int src_step, int src
     int lidx = get_local_id(0);
     int lidy = get_local_id(1);
 
-#define ptr(x, y) \
-    (src + mad24(src_step, clamp(gidy + y, 0, rows - 1), mad24(clamp(gidx + x, 0, cols - 1) * cn, sizeof(TYPE), src_offset)))
+    barrier(CLK_LOCAL_MEM_FENCE);
     //// Sobel
     // 
 
-    intN dx = loadpix(ptr(1, -1)) - loadpix(ptr(-1, -1)) 
-                + 2 * (loadpix(ptr(1, 0)) - loadpix(ptr(-1, 0)))
-                + loadpix(ptr(1, 1)) - loadpix(ptr(-1, 1));
+    intN dx = smem[ly - 1][lx + 1] - smem[ly - 1][lx - 1]
+            + 2 * (smem[ly][lx + 1] - smem[ly][lx - 1])
+            + smem[ly + 1][lx + 1] - smem[ly + 1][lx - 1]; 
 
-    intN dy = loadpix(ptr(-1, 1)) - loadpix(ptr(-1, -1))
-                + 2 * (loadpix(ptr(0, 1)) - loadpix(ptr(0, -1)))
-                + loadpix(ptr(1, 1)) - loadpix(ptr(1, -1));
-
-    __local int mag[GRP_SIZEY][GRP_SIZEX];
+    intN dy = smem[ly - 1][lx - 1] - smem[ly + 1][lx - 1]
+            + 2 * (smem[ly - 1][lx] - smem[ly + 1][lx])
+            + smem[ly - 1][lx + 1] - smem[ly + 1][lx + 1];
 
     //// Magnitude
     //
+    __local int mag[GRP_SIZEY][GRP_SIZEX];
 
     int x, y;
 #ifdef L2GRAD
@@ -137,22 +138,74 @@ __kernel void stage1_with_sobel(__global const uchar *src, int src_step, int src
     //// Threshold + Non maxima suppression
     //
 
-    if (!(lidx > 0 && lidx < (GRP_SIZEX - 1) && lidy > 0 && lidy < (GRP_SIZEY - 1) && gidx < (cols - 1) && gidy < (rows - 1)))
-        return;
-    int mag0 = mag[lidy][lidx];
-
     /*
+        A little bit magic
+
+        sector numbers
+
+        3   2   1
+         *  *  *
+          * * *
+        0*******0
+          * * *
+         *  *  *
+        1   2   3
+
+        We need to approximate arctg(dy / dx) to four direction 0, 45, 90 or 135 degrees.
+        Therefore if abs(dy / dx) belongs to the interval
+        [0, tg(22.5)]           -> 0 direction
+        [tg(22.5), tg(67.5)]    -> 1 or 3
+        [tg(67,5), +oo)         -> 2 
+        
+        Since tg(67.5) = 1 / tg(22.5), if we take
+        a = abs(dy / dx) * tg(22.5) and b = abs(dy / dx) * tg(67.5)
+        we can get another intervals
+        
+        in case a:
+        [0, tg(22.5)^2]     -> 0
+        [tg(22.5)^2, 1]     -> 1, 3
+        [1, +oo)            -> 2
+
+        in case b:
+        [0, 1]              -> 0
+        [1, tg(67.5)^2]     -> 1,3
+        [tg(67.5)^2, +oo)   -> 2
+
+        that can help to find direction without conditions. 
+
         0 - might belong to an edge
         1 - pixel doesn't belong to an edge
         2 - belong to an edge
     */
+
+    __constant int prev[4][2] = {
+        { 0, -1 },
+        { -1, 1 },
+        { -1, 0 },
+        { -1, -1 }
+    };
+
+    __constant int next[4][2] = {
+        { 0, 1 },
+        { 1, -1 },
+        { 1, 0 },         
+        { 1, 1 }      
+    };
+
+    if (!(lidx > 0 && lidx < (GRP_SIZEX - 1) && lidy > 0 && lidy < (GRP_SIZEY - 1) && gidx < cols && gidy < rows))
+        return;
+
+    int mag0 = mag[lidy][lidx];
+    
     int value = 1;
     if (mag0 > low_thr)
     {
-        int tg22x = abs(x) * TG22;
-        y <<= CANNY_SHIFT;       
+        int ax = abs(x);
+        int ay = abs(y);
+        int tg22x = ax * TG22;
+        ay <<= CANNY_SHIFT;       
 
-        if (abs(y) < tg22x)
+        if (ay < tg22x)
         {
             if (mag0 > mag[lidy][lidx - 1] && mag0 >= mag[lidy][lidx + 1])
             {
@@ -161,8 +214,8 @@ __kernel void stage1_with_sobel(__global const uchar *src, int src_step, int src
         }
         else 
         {
-            int tg67x = tg22x + (abs(x) << (1 + CANNY_SHIFT));
-            if (abs(y) > tg67x)
+            int tg67x = tg22x + (ax << (1 + CANNY_SHIFT));
+            if (ay > tg67x)
             {
                 if (mag0 > mag[lidy - 1][lidx] && mag0 >= mag[lidy + 1][lidx])
                 {
@@ -171,7 +224,7 @@ __kernel void stage1_with_sobel(__global const uchar *src, int src_step, int src
             }
             else
             {
-                int delta = ((x ^ y) < 0) ? -1 : 1;
+                int delta = ((x ^ y) < 0) ? 1 : -1;
                 if (mag0 > mag[lidy - delta][lidx - 1] && mag0 > mag[lidy + delta][lidx + 1])
                 {
                     canny_push(gidx, gidy)
@@ -179,6 +232,27 @@ __kernel void stage1_with_sobel(__global const uchar *src, int src_step, int src
             }
         }
     }
+    /*if (mag0 > low_thr)
+    {
+        int a = (y / (float)x) * NEW_TG22;
+        int b = (y / (float)x) * NEW_TG67;
+
+        int ai = min((int)abs(a), 1) + 1;
+        int bi = min((int)abs(b), 1);
+
+        //  ai = { 1, 2 }
+        //  bi = { 0, 1 }
+        //  ai * bi = { 0, 1, 2 } - directions that we need ( + 3 if x ^ y < 0)
+
+        int dir3 = (ai * bi) & (((x ^ y) & 0x80000000) >> 31); // if ai = 1, bi = 1, dy ^ dx < 0
+        int dir = ai * bi + 2 * dir3;
+        int prev_mag = mag[lidy + prev[dir][0]][lidx + prev[dir][1]]; 
+        int next_mag = mag[lidy + next[dir][0]][lidx + next[dir][1]] + (dir & 1);
+        if (mag0 > prev_mag && mag0 >= next_mag)
+        {
+            canny_push(gidx, gidy)
+        }
+    }*/
     
     storepix(value, map + mad24(gidy, map_step, mad24(gidx, sizeof(int), map_offset)));
 }

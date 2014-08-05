@@ -145,8 +145,8 @@ static bool ocl_Canny(InputArray _src, OutputArray _dst, float low_thresh, float
                         ocl::KernelArg::PtrReadWrite(counter),
                         low, high);
 
-        size_t globalsize[2] = { (size.width + sizeX_re - 1) / sizeX_re * sizeX_im  , 
-                                (size.height + sizeY_re - 1) / sizeY_re * sizeY_im },
+        size_t globalsize[2] = { size.width / sizeX_re * sizeX_im + size.width % sizeX_re + 2 , 
+                                size.height / sizeY_re * sizeY_im + size.height % sizeY_re + 2},
                 localsize[2] = { sizeX_im, sizeY_im };
 
         if (!with_sobel.run(2, globalsize, localsize, false))
@@ -174,8 +174,8 @@ static bool ocl_Canny(InputArray _src, OutputArray _dst, float low_thresh, float
                            ocl::KernelArg::PtrWriteOnly(stack),
                            ocl::KernelArg::PtrReadWrite(counter), low, high);
 
-        size_t globalsize[2] = { (size.width + sizeX_re - 1) / sizeX_re * sizeX_im + 2 , 
-                                (size.height + sizeY_re - 1) / sizeY_re * sizeY_im + 2},
+        size_t globalsize[2] = { size.width / sizeX_re * sizeX_im + size.width % sizeX_re + 2 , 
+                                size.height / sizeY_re * sizeY_im + size.height % sizeY_re + 2},
                 localsize[2] = { sizeX_im, sizeY_im };
 
         if (!without_sobel.run(2, globalsize, localsize, false))
@@ -201,7 +201,7 @@ static bool ocl_Canny(InputArray _src, OutputArray _dst, float low_thresh, float
 
     if (!edgesHysteresis.run(1, &gsize, &lsize, false))
         return false;
-
+        
     // get edges
     ocl::Kernel getEdgesKernel("getEdges", ocl::imgproc::canny_oclsrc, "-D GET_EDGES");
     if (getEdgesKernel.empty())
