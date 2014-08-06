@@ -82,18 +82,55 @@ __kernel void stage1_with_sobel(__global const uchar *src, int src_step, int src
                                 __global ushort2 *stack, __global int *counter, 
                                 int low_thr, int high_thr)
 {
+    __local intN smem[GRP_SIZEY + 2][GRP_SIZEX + 2];
+
+    int lidx = get_local_id(0);
+    int lidy = get_local_id(1);
+
     int gidx_im = get_global_id(0);
     int gidy_im = get_global_id(1);
 
     int gidx = gidx_im - (get_group_id(0) * 2 + 1);
     int gidy = gidy_im - (get_group_id(1) * 2 + 1);
 
-    int lidx = get_local_id(0);
-    int lidy = get_local_id(1);
+    if (lidx == 0 && lidy == 0)
+    {
+        smem[0][0] = loadpix(src + mad24(max(gidy - 1, 0), src_step,
+                                mad24(max(gidx - 1, 0), cn * sizeof(TYPE), src_offset)));
+        smem[0][GRP_SIZEX + 1] = loadpix(src + mad24(max(gidy - 1, 0), src_step,
+                                mad24(min(gidx + GRP_SIZEX, cols - 1), cn * sizeof(TYPE), src_offset)));
+        smem[GRP_SIZEY + 1][0] = loadpix(src + mad24(min(gidy + GRP_SIZEY, rows - 1), src_step,
+                                mad24(max(gidx - 1, 0), cn * sizeof(TYPE), src_offset)));
+        smem[GRP_SIZEY + 1][GRP_SIZEX + 1] = loadpix(src + mad24(min(gidy + GRP_SIZEY, rows - 1), src_step,
+                                mad24(min(gidx + GRP_SIZEX, cols - 1), cn * sizeof(TYPE), src_offset)));
+    }
+    if (lidx == 0)
+    {
+        smem[lidy + 1][0] = loadpix(src + mad24(clamp(gidy, 0, rows - 1), src_step,
+                                mad24(max(gidx - 1, 0), cn * sizeof(TYPE), src_offset)));
+        smem[lidy + 1][GRP_SIZEX + 1] = loadpix(src + mad24(clamp(gidy, 0, rows - 1), src_step,
+                                mad24(min(gidx + GRP_SIZEX, cols - 1), cn * sizeof(TYPE), src_offset)));
+    }
+    if (lidy == 0)
+    {
+        smem[0][lidx + 1] = loadpix(src + mad24(max(gidy - 1, 0), src_step,
+                                mad24(clamp(gidx, 0, cols - 1), cn * sizeof(TYPE), src_offset)));
+        smem[GRP_SIZEY + 1][lidx + 1] = loadpix(src + mad24(min(gidy + GRP_SIZEY, rows - 1), src_step,
+                                mad24(clamp(gidx, 0, cols - 1), cn * sizeof(TYPE), src_offset)));;
+    }
 
+    gidx = clamp(gidx, 0, cols - 1);
+    gidy = clamp(gidy, 0, rows - 1);
+
+    smem[lidy + 1][lidx + 1] = loadpix(src + mad24(gidy, src_step, mad24(gidx, cn * sizeof(TYPE), src_offset)));
+    
     barrier(CLK_LOCAL_MEM_FENCE);
+    
     //// Sobel
-    // 
+    //
+
+    int lx = lidx + 1;
+    int ly = lidy + 1; 
 
     intN dx = smem[ly - 1][lx + 1] - smem[ly - 1][lx - 1]
             + 2 * (smem[ly][lx + 1] - smem[ly][lx - 1])
@@ -192,13 +229,13 @@ __kernel void stage1_with_sobel(__global const uchar *src, int src_step, int src
         { 1, 1 }      
     };
 
-    if (!(lidx > 0 && lidx < (GRP_SIZEX - 1) && lidy > 0 && lidy < (GRP_SIZEY - 1) && gidx < cols && gidy < rows))
+    if (!(lidx > 0 && lidx < (GRP_SIZEX - 1) && lidy > 0 && lidy < (GRP_SIZEY - 1))) // needn't cols, rows
         return;
 
     int mag0 = mag[lidy][lidx];
     
     int value = 1;
-    if (mag0 > low_thr)
+    /*if (mag0 > low_thr)
     {
         int ax = abs(x);
         int ay = abs(y);
@@ -231,8 +268,8 @@ __kernel void stage1_with_sobel(__global const uchar *src, int src_step, int src
                 }
             }
         }
-    }
-    /*if (mag0 > low_thr)
+    }*/
+    if (mag0 > low_thr)
     {
         int a = (y / (float)x) * NEW_TG22;
         int b = (y / (float)x) * NEW_TG67;
@@ -252,7 +289,7 @@ __kernel void stage1_with_sobel(__global const uchar *src, int src_step, int src
         {
             canny_push(gidx, gidy)
         }
-    }*/
+    }
     
     storepix(value, map + mad24(gidy, map_step, mad24(gidx, sizeof(int), map_offset)));
 }
